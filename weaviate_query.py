@@ -20,15 +20,6 @@ from typing import List, Union
 import re
 
 
-def classify(prompt: str) -> dict:
-    res = model_classificator.run([
-        {"role": "system", "text": SYSTEM},
-        {"role": "user", "text": prompt}
-    ])
-
-    text = res.text
-    return json.loads(text)
-
 load_dotenv() #загружаем переменные среды из .env файла
 
 
@@ -40,21 +31,13 @@ client = weaviate.connect_to_weaviate_cloud(
     auth_credentials=Auth.api_key(weaviate_api_key),
 )
 
-print(client.is_ready())  # Should print: `True`
+print(client.is_ready())
 
 
 
 folder_id = os.getenv("FOLDER_ID_YANDEX")
 api_key = os.getenv("API_KEY_YANDEX")
 sdk = YCloudML(folder_id=folder_id, auth=api_key)
-model_classificator = (
-    sdk.models.completions("yandexgpt")
-    .configure(
-        temperature=0.0,
-        max_tokens=20,
-        response_format="json" # строго JSON
-    )
-)
 
 def to_text(x):
     return "" if x is None else str(x)
@@ -131,7 +114,7 @@ def hoare_sort_pairs(arr):
     return hoare_sort_pairs(left) + middle + hoare_sort_pairs(right)
 
 def find_cheap_expensive_middle_goods(vec_query:str, flag:int = 1, search_limit:int =  50):
-
+    search_limit += (search_limit//100*5) #для перекрытия нахождения небольшой погрешности (в результат векторного поиска втискивается лишнее)
     database_name = "GoodsListWithIDWithoutCharacteristics"
     chuncks = goods_vector_search(vec_query, database_name, search_limit)
     chunks_and_price = []
@@ -143,20 +126,14 @@ def find_cheap_expensive_middle_goods(vec_query:str, flag:int = 1, search_limit:
     #сортируем по возрастанию
     sorted_by_price_chunks = hoare_sort_pairs(chunks_and_price)
     if flag == 1: #самые дешевые
-        if search_limit == 50:
-            return sorted_by_price_chunks[0:15]
-        else:
-            return sorted_by_price_chunks[0:20]
+        return sorted_by_price_chunks[0:15]
+
     elif flag == 2: #средней ценовой категории
-        if search_limit == 50:
-            return sorted_by_price_chunks[15:35]
-        else:
-            return sorted_by_price_chunks[65:85]
+        return sorted_by_price_chunks[search_limit//2 - 7:search_limit//2 + 7]
+
     elif flag == 3: #самые дорогие
-        if search_limit == 50:
-            return sorted_by_price_chunks[35:50]
-        else:
-            return sorted_by_price_chunks[139:150]
+        return sorted_by_price_chunks[search_limit-15:search_limit-1]
+
 
 
 # res = find_cheap_expensive_middle_goods("Электропечи", 1)
@@ -221,7 +198,7 @@ assistant = sdk.assistants.create(
         "Если просят найти товр/товары, вызывай GoodsVectorSearch"
         "Передавай в инструмент три аргумента: запрос пользователя, название базы данных и количество чанков для поиска."
         "Используй один из двух вариантов:"
-        "- Либо запрос и база \"GoodsListWithID\" и 5 чанков"
+        "- Либо запрос и база \"GoodsListWithID\" и 10 чанков"
         "- Либо запрос и база \"GoodsListWithIDWithoutCharacteristics\" и 15 чанков"
         "ВАЖНО: передавай в инструмент аргумент строго в формате JSON с ключами vec_query, database_name и search_limit - название базы как строка, количество чанков как целое число."
         "Пример корректного вызова инструмента: {\"vec_query\": \"электропечь Harvia до 60000 рублей и высотой меньше 1.5 метра\", \"database_name\": \"GoodsListWithID\", \"search_limit\": 10}"
@@ -230,6 +207,7 @@ assistant = sdk.assistants.create(
         "\"GoodsListWithID\" содержит еще характеристики товаров помимо (номенклатуры товара, цены и артикула)"
         "При использовании инструмента GoodsVectorSearch, самостоятельно определи нужны ли характеристики товаров,"
         "Если нужны выбери комбинацию с \"GoodsListWithID\", не нужны - \"GoodsListWithIDWithoutCharacteristics\"."
+        "В свой ответ передавай ID выбранных товаров, это сервисная информация, НУЖНАЯ ОЧЕНЬ"
         
          "Формат контекста полученного инструментом GoodsVectorSearch: каждая строка — ОТДЕЛЬНЫЙ товар. В начале строки всегда есть идентификатор в виде "
         "\"ID <число>\". Примеры: \"ID 12 ...\".\n\n"
@@ -244,14 +222,18 @@ assistant = sdk.assistants.create(
         "НЕЛЬЗЯ передавать строки вроде \"1,2,3\" или \"ID 12\" — только числа.\n\n"
         
         "У ТЕБЯ ЕСТЬ ИНСТРУМЕНТ FindCheapExpensiveMiddleGoods. Вызывай его, когда тебе необходимо найти "
-        "самые дешевые или средней цены или самые дорогие товары определенного вида "
-        "Используй в первую очередь этот инструмент для запрсов содержащих \"дорогие/самый дорогой\", \"средней цены\", \"дешевые/самый дорогой\""
+        "самые дешевые или средней цены или самые дорогие товары определенного вида"
+        "Используй в первую очередь этот инструмент для запрсов содержащих \"дорогие/самый дорогой\", \"средней цены\", \"дешевые/самый дорогой\", даэе если есть предыдущий контекст переписки"
         "ВАЖНО: передавай в инструмент аргумент строго в формате JSON с ключами vec_query, flag и search_limit"
         "flag - целое число: если 1 - ищем самые дешевые товары, если 2 - ищем товары средней ценовой категории, если 3 - ищем самые дорогие товары"
-        "search_limit - целое число либо 50 либо 150; если в запросе пользователя есть название фирмы, то 50, иначе передаем значение 150"
-        "Пример корректного вызова инструмента: {\"vec_query\": \"Какая самая дорогая стеклянная дверь\", \"flag\": \"3\", \"search_limit\": 150}"
+        "search_limit - целое число которое нужно определить по структуре каталога магазина, в которой указаны число товаров в категориях,"
+        "то есть сначала определяешь в какой категории(подкатегории) ищем и берешь соответсвующее чмсло. Если это число равно 0, "
+        "не вызывай инструмент FindCheapExpensiveMiddleGoods,"
+        "сразу говори, что таких товаров нет в наличии."
+        "Пример корректного вызова инструмента: {\"vec_query\": \"Какая самая дорогая стеклянная дверь\", \"flag\": \"3\", \"search_limit\": 126}"
         "НЕЛЬЗЯ передавать другие значения flag или произвольные числа чанков - используй только указанные выше комбинации."
-        ""
+        
+        
         
         "Алгоритм:\n"
         "1) Внимательно прочитай запрос пользователя (Query).\n"
@@ -267,16 +249,182 @@ assistant = sdk.assistants.create(
 
         # "Стиль ответа: по-русски, кратко, списком, без лишней воды. Не используй гипотезы. "
         "Если показаны цены — указывай валюту (руб.)."
+        
+        "Структура каталога магазина с указанием количество товаров в каталоге, подкаталоге и возможно в подподкаатлоге"
+        "где cat - категория, subcat - подкатегория, subsubcat - подподкатегория"
+        "и число означающее сколько товаров внутри категории(или подкатегории или подподкатегории):"
+        "cat Дровяные печи 288"
+        "___ subcat Feringer 54"
+        "___ ___ subsubcat Печи 24"
+        "___ ___ subsubcat Отопительные котлы 6"
+        "___ ___ subsubcat Дымоходы и комплектующие 24"
+        "___ subcat Harvia 24"
+        "___ subcat Атмосфера 24"
+        "___ subcat Костёр 24"
+        "___ subcat Grill`D 24"
+        "___ subcat Гефест 24"
+        "___ subcat Везувий 24"
+        "___ subcat ASTON 21"
+        "___ subcat Пегас 24"
+        "___ subcat Термофор 0"
+        "___ subcat Kastor 0"
+        "___ subcat EOS 0s"
+        "cat Камни для печи 24"
+        "___ subcat Камни для печи 24"
+        "cat Дымоходы и баки 60"
+        "___ subcat Дымоходы Теплов и Сухов 24"
+        "___ subcat УМК  24"
+        "___ subcat Баки и теплообменники 3"
+        "___ subcat Феникс 1"
+        "___ subcat Дымоходы Вермилоджик 0"
+        "___ subcat Гефест 8"
+        "___ subcat Феррум 0"
+        "cat Электрокаменки 234"
+        "___ subcat KARINA  24"
+        "___ subcat Tylo 0"
+        "___ subcat Helo 4"
+        "___ subcat Sangens  10"
+        "___ subcat Henki 4"
+        "___ subcat Костёр 0"
+        "___ subcat Ресурс Электрокотел 24"
+        "___ subcat Sawo 24"
+        "___ subcat BORN 24"
+        "___ subcat Harvia 24"
+        "___ subcat Политех 0"
+        "___ subcat EOS 0"
+        "___ subcat Ограждения, фланцы 24"
+        "___ subcat Комплектующие 24"
+        "___ subcat Тэны 24"
+        "___ subcat Прочее 24"
+        "cat Пульты управления 49"
+        "___ subcat Sawo 18"
+        "___ subcat Harvia 10"
+        "___ subcat Политех 0"
+        "___ subcat KARINA 4"
+        "___ subcat Костёр 3"
+        "___ subcat Sangens 4"
+        "___ subcat Ресурс Электрокотел 7"
+        "___ subcat BORN 3"
+        "cat Парогенераторы 39"
+        "___ subcat Sawo 20"
+        "___ subcat Harvia 4"
+        "___ subcat Grandis 15"
+        "cat Пиломатериалы 191"
+        "___ subcat Вагонка 24"
+        "___ subcat Полок 24"
+        "___ subcat Липа 24"
+        "___ subcat Ольха 24"
+        "___ subcat Осина 0"
+        "___ subcat Абаш 16"
+        "___ subcat Кедр 6"
+        "___ subcat Термодревесина 24"
+        "___ subcat Плинтус и уголки 24"
+        "___ subcat Пропитки для дерева 1"
+        "___ subcat Прочее 24"
+        "cat Гималайская соль 56"
+        "___ subcat Соляная плитка 24"
+        "___ subcat Соляные лампы 24"
+        "___ subcat Клеевая смесь 2"
+        "___ subcat Пищевая соль 6"
+        "cat Двери 126"
+        "___ subcat Sawo 13"
+        "___ subcat Grandis 15"
+        "___ subcat Ecodoors 24"
+        "___ subcat Harvia 24"
+        "___ subcat Россия 17"
+        "___ subcat Doorwood 24"
+        "___ subcat Арта 9"
+        "cat Аксессуары и комплектующие 693"
+        "___ subcat Термометры и гигрометры 24"
+        "___ subcat Термогигрометры 24"
+        "___ subcat Термометры 14"
+        "___ subcat Гигрометры 24"
+        "___ subcat Часы 24"
+        "___ subcat Песочные часы 24"
+        "___ subcat Часы вне сауны 8"
+        "___ subcat Запарники и шайки 24"
+        "___ subcat Sawo 24"
+        "___ subcat Китай 24"
+        "___ subcat Россия 24"
+        "___ subcat Harvia 1"
+        "___ subcat Tammer-Tukku 1"
+        "___ subcat Woodson 5"
+        "___ subcat Черпаки и ковши 24"
+        "___ subcat Sawo 9"
+        "___ subcat Китай 17"
+        "___ subcat Россия 24"
+        "___ subcat Harvia 0"
+        "___ subcat Tylo 1"
+        "___ subcat Tammer-Tukku 1"
+        "___ subcat Woodson 4"
+        "___ subcat Щетки для мытья 4"
+        "___ subcat Подголовники 17"
+        "___ subcat Sawo 3"
+        "___ subcat Китай 6"
+        "___ subcat Россия 8"
+        "___ subcat Tammer-Tukku 0"
+        "___ subcat Ароматизаторы 24"
+        "___ subcat Sawo 4"
+        "___ subcat Harvia 2"
+        "___ subcat Другие 24"
+        "___ subcat Веники для бани 17"
+        "___ subcat Обливные устройства 19"
+        "___ subcat Комплектующие 24"
+        "___ subcat Sawo 24"
+        "___ subcat Grandis 4"
+        "___ subcat Harvia 24"
+        "___ subcat Прочее 24"
+        "___ subcat Sawo 18"
+        "___ subcat Harvia 4"
+        "___ subcat Другие 24"
+        "___ subcat Шапки 24"
+        "___ subcat Россия 24"
+        "___ subcat Текстиль 23"
+        "___ subcat Текстиль 23"
+        "cat Освещение 39"
+        "___ subcat Лампы и светодиоды 13"
+        "___ subcat Cariitti 2"
+        "___ subcat Абажуры 24"
+        "cat Все для хамама 141"
+        "___ subcat Парогенераторы 19"
+        "___ subcat Sawo 16"
+        "___ subcat Harvia 3"
+        "___ subcat Grandis 0"
+        "___ subcat Двери 24"
+        "___ subcat Sawo 2"
+        "___ subcat Grandis 7"
+        "___ subcat Harvia 24"
+        "___ subcat Освещение 11"
+        "___ subcat Cariitti 11"
+        "___ subcat Tylo 0"
+        "___ subcat Курны 24"
+        "cat Аттракционы для бани 0"
+        "cat Инфракрасные сауны 16"
+        "___ subcat Оборудование для сухих бань 16"
+        "cat Готовые сауны 2"
+        "cat Купели 35"
+        "___ subcat Купель из массива дерева 24"
+        "___ subcat Купель из пластика 11"
+        "cat Облицовка 24"
+        "cat Окна 7"
+        "cat Чаны DUKO 2"
+        "cat Мебель для бани 12"
+        "___ subcat Sawo 6"
+        "___ subcat Прочее 6"
     ),
     tools=[get_desc_tool, goods_vector_search_tool, find_cheap_expensive_middle_goods_tool],
 )
 
+#классы а не просто методы, для валидации аргументов с использование pydantic
 LOCAL_TOOLS = {
     "GetDescriptionsByIds": GetDescriptionsByIds,
     "GoodsVectorSearch": GoodsVectorSearch,
     "FindCheapExpensiveMiddleGoods": FindCheapExpensiveMiddleGoods
 }
+
+
 def run_with_tools(assistant, thread, prompt: str) -> str:
+
     thread.write(prompt)
     run = assistant.run(thread)
     res = run.wait()
@@ -292,25 +440,25 @@ def run_with_tools(assistant, thread, prompt: str) -> str:
 
             print(f"[tool] {name}({args})")
 
-            # 2) Берём локальный класс-инструмент
-            ToolClass = LOCAL_TOOLS.get(name)
+            #Берём локальный класс-инструмент
+            ToolClass = LOCAL_TOOLS.get(name) #ToolClass - ссылка например на GetDescriptionsByIds
 
             try:
-                # 3) Валидируем вход через Pydantic и запускаем ваш .process()
-                obj = ToolClass(**args)
-                content = obj.process()   # ВАЖНО: без thread; ваш process(self) ничего не принимает
+                #Валидируем вход через Pydantic и запускаем  .process()
+                obj = ToolClass(**args) #Например объект класса GetDescriptionsByIds
+                content = obj.process()   # вызываем process от объекта класса
             except Exception as e:
                 # Чтобы видеть реальную причину падения, возвращаем ошибку как контент
                 content = {"error": repr(e)}
 
-            # 4) Контент должен быть JSON-сериализуемым (dict/str/список)
+            #Контент должен быть JSON-сериализуемым (например словарь)
             tool_results.append({"name": name, "content": str(content)})
 
-        # 5) Отдаём результаты инструментов модели и ждём следующий шаг
+        #Отдаём результаты инструментов модели и ждём следующий шаг
         run.submit_tool_results(tool_results = tool_results)
         res = run.wait()
 
-    # Когда tool_calls больше нет — это финальный ответ
+    #Когда tool_calls больше нет — это финальный ответ
     return res.text
 
 thread = sdk.threads.create(ttl_days=1, expiration_policy="static")
@@ -318,6 +466,10 @@ thread = sdk.threads.create(ttl_days=1, expiration_policy="static")
 
 while(True):
     prompt = input()
+    if prompt == "":
+        continue
+    if prompt == "stop":
+        break
     result = run_with_tools(assistant, thread, prompt)
     print(result)
 
